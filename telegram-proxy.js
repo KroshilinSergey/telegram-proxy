@@ -1,71 +1,138 @@
 const express = require('express');
+const bodyParser = require('body-parser');
 const cors = require('cors');
-const axios = require('axios');
+const TelegramBot = require('node-telegram-bot-api');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Вставьте ваши данные Telegram бота
-/* const TELEGRAM_BOT_TOKEN = '8443660805:AAGxVeBmRBxGsXtlNTKgvwqFdFbboOOG5_Y';
-const TELEGRAM_CHAT_ID = '596789512'; */
+// Настройки
+app.use(cors());
+app.use(bodyParser.json());
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+// Конфигурация Telegram бота
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'ваш_токен_бота';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || 'ваш_chat_id';
 
-if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-console.error('Ошибка: не заданы TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID');
+const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
+
+// Функция для отправки сообщения в Telegram
+async function sendToTelegram(data) {
+  try {
+    // Формируем красивое сообщение
+    const message = `
+📋 *НОВАЯ ЗАЯВКА С САЙТА*
+
+👤 *Имя:* ${data.name}
+📞 *Телефон:* \`${data.phone}\`
+🛠 *Выбранные услуги:* ${data.services}
+⏰ *Время отправки (Самара):* ${data.timestamp}
+
+💬 *Полное сообщение:*
+${data.fullMessage || 'Нет дополнительной информации'}
+
+_IP: ${data.ip || 'неизвестно'}_
+_User Agent: ${data.userAgent || 'неизвестно'}_
+    `;
+
+    // Отправляем сообщение
+    await bot.sendMessage(TELEGRAM_CHAT_ID, message, {
+      parse_mode: 'Markdown',
+      disable_web_page_preview: true
+    });
+
+    return true;
+  } catch (error) {
+    console.error('Ошибка отправки в Telegram:', error);
+    throw error;
+  }
 }
 
-
-// Middleware
-app.use(cors());
-app.use(express.json());
-
-// Маршрут для отправки данных в Telegram
-app.post('/api/send-to-telegram', async (req, res) => {
-    try {
-        const { name, phone } = req.body;
-        
-        if (!name || !phone) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Имя и телефон обязательны' 
-            });
-        }
-
-        const message = `📋 НОВАЯ ЗАЯВКА НА ЗАМЕР\n\n👤 Имя: ${name}\n📞 Телефон: ${phone}\n⏰ Время: ${new Date().toLocaleString('ru-RU')}`;
-
-        // Отправка сообщения в Telegram
-        const response = await axios.post(
-            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-            {
-                chat_id: TELEGRAM_CHAT_ID,
-                text: message,
-                parse_mode: 'HTML'
-            }
-        );
-
-        if (response.data.ok) {
-            console.log('Сообщение отправлено в Telegram:', response.data.result);
-            res.json({ success: true, message: 'Заявка успешно отправлена!' });
-        } else {
-            throw new Error('Ошибка Telegram API');
-        }
-    } catch (error) {
-        console.error('Ошибка при отправке в Telegram:', error.message);
-        res.status(500).json({ 
-            success: false, 
-            error: 'Ошибка сервера при отправке заявки' 
-        });
+// Главный маршрут
+app.get('/', (req, res) => {
+  res.json({
+    service: 'Telegram Proxy API',
+    version: '2.0',
+    status: 'running',
+    endpoints: {
+      send: 'POST /api/send-to-telegram'
     }
+  });
 });
 
-// Проверка работы сервера
-app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', message: 'Прокси-сервер работает' });
+// Маршрут для отправки в Telegram
+app.post('/api/send-to-telegram', async (req, res) => {
+  try {
+    console.log('Получены данные:', req.body);
+
+    // Получаем данные из запроса
+    const { name, phone, services, timestamp, fullMessage } = req.body;
+    
+    // Добавляем дополнительную информацию
+    const data = {
+      name: name || 'Не указано',
+      phone: phone || 'Не указано',
+      services: services || 'Не выбраны',
+      timestamp: timestamp || new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Samara' }),
+      fullMessage: fullMessage || '',
+      ip: req.headers['x-forwarded-for'] || req.connection.remoteAddress,
+      userAgent: req.headers['user-agent']
+    };
+
+    // Валидация обязательных полей
+    if (!name || !phone) {
+      return res.status(400).json({
+        success: false,
+        error: 'Отсутствуют обязательные поля: name и phone'
+      });
+    }
+
+    // Отправляем в Telegram
+    await sendToTelegram(data);
+
+    // Логируем успешную отправку
+    console.log('Заявка успешно отправлена:', {
+      name: data.name,
+      phone: data.phone,
+      services: data.services,
+      timestamp: data.timestamp
+    });
+
+    // Отправляем успешный ответ
+    res.json({
+      success: true,
+      message: 'Заявка успешно отправлена в Telegram',
+      data: {
+        name: data.name,
+        phone: data.phone,
+        services: data.services,
+        timestamp: data.timestamp
+      }
+    });
+
+  } catch (error) {
+    console.error('Ошибка обработки заявки:', error);
+    
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Внутренняя ошибка сервера',
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
 });
 
+// Маршрут для проверки здоровья
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Обработка 404
+app.use((req, res) => {
+  res.status(404).json({ error: 'Маршрут не найден' });
+});
+
+// Запуск сервера
 app.listen(PORT, () => {
-    console.log(`🚀 Прокси-сервер запущен на порту ${PORT}`);
-    console.log(`📞 Телеграм бот настроен для чата: ${TELEGRAM_CHAT_ID}`);
+  console.log(`🚀 Сервер запущен на порту ${PORT}`);
+  console.log(`📱 Telegram Bot готов к приему сообщений`);
 });
